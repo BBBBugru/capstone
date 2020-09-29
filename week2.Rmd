@@ -1,0 +1,319 @@
+---
+title: "Data Science Capstone - Milestone Report"
+author: "A.B. Büğrü"
+date: "29.07.2020"
+output: 
+    html_document:
+        toc: true
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tibble)
+library(kableExtra)
+library(tm)
+library(RWeka)
+library(SnowballC)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, cache = TRUE, fig.align = "center")
+options(knitr.table.format = "html") 
+```
+
+
+##Dataset
+
+```{r message=FALSE}
+# Get the file list
+listOfFiles <- dir("HC_Corpora", recursive = TRUE, full.names = TRUE)
+# Show the list as bullets
+kable(cbind(
+          seq(1, length(listOfFiles)), 
+          listOfFiles), 
+      col.names = c('#', 'File')) %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive", "bordered"), 
+          full_width = FALSE)
+```
+
+ - ***de_DE.twitter.txt***:
+```{r}
+connnectionBlogsFile <- file("HC_Corpora/de_DE/de_DE.twitter.txt", "r")
+readLines(connnectionBlogsFile, 3)
+close(connnectionBlogsFile)
+```
+ - ***en_US.twitter.txt***:
+```{r}
+connnectionBlogsFile <- file("HC_Corpora/en_US/en_US.twitter.txt", "r")
+readLines(connnectionBlogsFile, 3)
+close(connnectionBlogsFile)
+```
+
+
+```{r message=FALSE}
+# Get the file stat list from each file
+listOfFileInfos <- data.frame(file = listOfFiles, size = file.info(listOfFiles)$size)
+listOfFileInfos$sizeInMB <- round(listOfFileInfos$size / (1024 * 1024), digits = 2)
+# Generate four new columns in order to be completed with 'wc' command execution data
+listOfFileInfos$lineCount <- 0
+listOfFileInfos$wordCount <- 0
+listOfFileInfos$wordsPerLineRatio <- 0
+# adding a column in order to show the file language
+listOfFileInfos <- listOfFileInfos %>%
+  rowwise() %>% 
+  mutate(language = 
+           ifelse(str_detect(file, "en_US"), 'English', 
+             ifelse(str_detect(file, "de_DE"), 'German',
+               ifelse(str_detect(file, "fi_FI"), 'Finnish',
+                 ifelse(str_detect(file, "ru_RU"), 'Russian', 'not-defined')))))
+# Auxiliary function. It allows get data from files using the 'wc' command.
+executeWc <- function(x) as.numeric(str_split(system(paste0("wc ", x), intern = TRUE),  boundary("word"))[[1]][1:2])
+# Complete de file stats with the 'wc' command data
+for (index in 1:nrow(listOfFileInfos)) {
+  wcCommandResults <- executeWc(listOfFileInfos[index,]$file)
+  
+  listOfFileInfos[index,]$lineCount <- wcCommandResults[1]
+  listOfFileInfos[index,]$wordCount <- wcCommandResults[2]
+  listOfFileInfos[index,]$wordsPerLineRatio <- round(wcCommandResults[2] / wcCommandResults[1], digits = 2)
+}
+columNamesToShow <- c('File', 'Size', 'Size in MB', 'Line count', 'Word count', 'W/L ratio', 'Language')
+# Show a formatted table
+kable(listOfFileInfos, col.names = columNamesToShow)  %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive", "bordered"), 
+          full_width = FALSE)
+```
+
+```{r results='asis'}
+# Select files in english language
+englishFiles <- listOfFileInfos[listOfFileInfos$language == "English",]
+# Show a formatted table
+kable(englishFiles, col.names = columNamesToShow)%>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive", "bordered"), 
+          full_width = FALSE)
+```
+
+###Dataset cleaning
+
+
+```{r}
+tweets <- readLines('HC_Corpora/en_US/en_US.twitter.txt', encoding = 'UTF-8', skipNul = TRUE)
+tweets <- iconv(tweets, to = "ASCII", sub="")
+blogs <- readLines('HC_Corpora/en_US/en_US.blogs.txt', encoding = 'UTF-8', skipNul = TRUE)
+newsFileConnection <- file('HC_Corpora/en_US/en_US.news.txt', encoding = 'UTF-8', open = 'rb')
+news <- readLines(newsFileConnection, skipNul = TRUE)
+close(newsFileConnection)
+sampledText <- c(
+  blogs[sample(1:length(blogs),length(blogs)/100)], 
+  news[sample(1:length(news),length(news)/100)], 
+  tweets[sample(1:length(tweets),length(tweets)/100)])
+remove(blogs)
+remove(tweets)
+remove(news)
+```
+
+```{r build-corpus}
+sampledText <- iconv(sampledText, to = "ASCII", sub="")
+corpus <- VCorpus(VectorSource(sampledText))
+corpus
+# Utilitary function, for counting the words in a corpus.
+corpusWordCounter <- function(corpus) {
+  sum(sapply(corpus, str_count, pattern = "\\S+"))
+}
+originalWordCount <- corpusWordCounter(corpus)
+```
+```{r}
+writeLines(as.character(corpus[[1]]))
+writeLines(as.character(corpus[[2]]))
+```
+
+
+* *Uniforming the text to lowercase*
+* *Removing punctuation, number, special characters, etc.*
+* *Striping whitespaces*
+* *Removing stop words*
+* *Profanity filtering (Removing swear words)*
+* *Stemming the text*
+
+
+```{r}
+getTransformations()
+```
+
+```{r uniformimng_tolower}
+corpus <- tm_map(corpus, content_transformer(tolower))
+writeLines(as.character(corpus[[1]]))
+writeLines(as.character(corpus[[2]]))
+```
+://eight2late.wordpress.com/2015/05/27/a-gentle-introduction-to-text-mining-using-r/)).
+```{r removing_punctuation}
+
+toSpace <- content_transformer(function(x, pattern) {return (gsub(pattern, " ", x))})
+
+corpus <- tm_map(corpus, toSpace, "-")
+corpus <- tm_map(corpus, toSpace, ":")
+
+corpus <- tm_map(corpus, toSpace, "`")
+corpus <- tm_map(corpus, toSpace, "´")
+corpus <- tm_map(corpus, toSpace, " -")
+# Special single quotes
+corpus <- tm_map(corpus, toSpace, "[\x82\x91\x92]")
+# URIs
+corpus <- tm_map(corpus, toSpace, '(ftp|http|https)[^([:blank:]|\\"|<|&|#\n\r)]+')
+# Twitter users and hashtags
+corpus <- tm_map(corpus, toSpace, '(@|#)[^\\s]+')
+# Emails addresses
+corpus <- tm_map(corpus, toSpace, '^[[:alnum:].-_]+@[[:alnum:].-]+$')
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+writeLines(as.character(corpus[[1]]))
+writeLines(as.character(corpus[[2]]))
+```
+
+```{r striping_whitespaces}
+corpus <- tm_map(corpus, stripWhitespace)
+writeLines(as.character(corpus[[1]]))
+writeLines(as.character(corpus[[2]]))
+```
+
+```{r}
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+writeLines(as.character(corpus[[1]]))
+writeLines(as.character(corpus[[2]]))
+```
+
+####Profanity filtering
+
+```{r removing_swear_words}
+swearWordsFileUrl <- 'http://www.frontgatemedia.com/new/wp-content/uploads/2014/03/Terms-to-Block.csv'
+rawSwearWords <- readLines(swearWordsFileUrl)
+swearWords <- gsub(',"?', '', rawSwearWords[5:length(rawSwearWords)])
+sample(swearWords, 10)
+corpus <- tm_map(corpus, removeWords, swearWords)
+```
+
+####Stemming the text
+
+```{r}
+corpus <- tm_map(corpus, stemDocument)
+lastTransformationWordCount <- corpusWordCounter(corpus)
+```
+
+## Analysis
+
+```{r dtm}
+# Tokenizers based on NLP package
+unigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+bigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+# Utility function, for getting the top ten frequencies
+getNgramFrequencies <- function(dtm) {
+  sort(colSums(as.matrix(dtm)), decreasing = TRUE)
+}
+unigramDtm  <- DocumentTermMatrix(corpus, control = list(tokenize = unigramTokenizer))
+unigramDtm <- removeSparseTerms(unigramDtm, 0.999)
+unigramFrequencies <- getNgramFrequencies(unigramDtm)
+unigram10Frequencies <- unigramFrequencies[1:10]
+unigramFrequenciesDF <- data.frame(word = names(unigram10Frequencies), frequency = as.numeric(unigram10Frequencies))
+bigramDtm  <- DocumentTermMatrix(corpus, control = list(tokenize = bigramTokenizer))
+bigramDtm <- removeSparseTerms(bigramDtm, 0.999)
+bigramFrequencies <- getNgramFrequencies(bigramDtm)
+bigram10Frequencies <- bigramFrequencies[1:10]
+bigramFrequenciesDF <- data.frame(bigram = names(bigram10Frequencies), frequency = as.numeric(bigram10Frequencies))
+trigramDtm <- DocumentTermMatrix(corpus, control = list(tokenize = trigramTokenizer))
+trigramDtm <- removeSparseTerms(trigramDtm, 0.9999)
+trigramFrequencies <- getNgramFrequencies(trigramDtm)
+trigram10Frequencies <- trigramFrequencies[1:10]
+trigramFrequenciesDF <- data.frame(trigram = names(trigram10Frequencies), frequency = as.numeric(trigram10Frequencies))
+```
+
+```{r unigrams-details}
+kable(unigramFrequenciesDF, col.names = c('Word', 'Frequency'))  %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive", "bordered"), 
+    full_width = FALSE)
+ggplot(data = unigramFrequenciesDF, aes(reorder(word, -frequency), frequency)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Most frequent words") +
+  xlab("Words") + ylab("Frequency") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r bigrams-details}
+kable(bigramFrequenciesDF, col.names = c('2-Gram', 'Frequency'))  %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive", "bordered"), 
+    full_width = FALSE)
+ggplot(data = bigramFrequenciesDF, aes(reorder(bigram, -frequency), frequency)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Most frequent 2-Grams") +
+  xlab("2-Grams") + ylab("Frequency") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r trigrams-details}
+kable(trigramFrequenciesDF, col.names = c('Word', 'Frequency'))  %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive", "bordered"), 
+    full_width = FALSE)
+ggplot(data = trigramFrequenciesDF, aes(reorder(trigram, -frequency), frequency)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Most frequent 3-Grams") +
+  xlab("3-Grams") + ylab("Frequency") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+totalOfWordInstances <- sum(unigramFrequencies)
+totalOfWordInstances
+```
+```{r}
+totalOfUniqueWords <- length(unigramFrequencies)
+totalOfUniqueWords
+findAmountWordsForCoverage <- function(descendingFrequencies, coverage) {
+  
+  totalOfWordInstances <- sum(descendingFrequencies)
+  totalOfUniqueWords <- length(descendingFrequencies)
+  coveragePercentage <- totalOfWordInstances * (coverage  / 100)
+  accumulatedWords <- 0
+  lastIndex <- 0
+  
+  for (index in seq_len(totalOfUniqueWords)) { 
+    accumulatedWords <- accumulatedWords + descendingFrequencies[[index]]
+    lastIndex <- index
+    
+    if (accumulatedWords >= coveragePercentage) break 
+  }
+  lastIndex
+}
+```
+
+```{r non-english-words, echo=TRUE}
+detectNonEnglishWords <- function(line) {
+  
+  convertWord <- function(word) iconv(word, 'ISO8859-1', 'ASCII', sub = '<NON_ENGLISH_LETTER>')
+  
+  isNotConvertedWord <- function(word) !str_detect(convertWord(word), '<NON_ENGLISH_LETTER>')
+  
+  wordsInLine <- str_split(line, boundary("word"))[[1]]
+  wordsDF <- data.frame(word = wordsInLine)
+  wordsDF <- wordsDF %>% 
+    rowwise() %>% 
+    mutate(valid = isNotConvertedWord(word))
+  
+  wordsDF
+}
+```
+
+```{r non-english-words-2, echo=TRUE}
+originalText <- 'The Fußball is the King of Sports'
+originalText
+detectNonEnglishWords('The Fußball is the King of Sports')
+```
+```{r non-english-words-3, echo=TRUE}
+
+removeNonEnglishWords <- function(line) {
+  wordsDF <- detectNonEnglishWords(line)
+  filteredLine <- paste(wordsDF[wordsDF$valid == TRUE, 'word']$word, collapse = " ")
+  filteredLine
+}
+originalText <- 'The Fußball is the King of Sports'
+originalText
+removeNonEnglishWords('The Fußball is the King of Sports')
+```
